@@ -8,6 +8,10 @@ import io
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
+import shutil
+import time
+import threading
+from pathlib import Path
 
 mcp = FastMCP("filesystem")
 
@@ -102,6 +106,124 @@ def decode_content(content: str, filename: str = "") -> dict:
     except Exception as e:
         result["readable_content"] = f"[Error decoding file: {e}]"
     
+    return result
+
+MAX_AGE_SECONDS = 86400  # 24 hours = 1 day
+
+
+def flush_old_files():
+    """Background thread that deletes files older than 1 day."""
+    while True:
+        now = time.time()
+        deleted = []
+
+        if WORKSPACE.exists():
+            for item in WORKSPACE.iterdir():
+                age = now - item.stat().st_mtime
+
+                if age > MAX_AGE_SECONDS:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                    deleted.append(item.name)
+
+        if deleted:
+            print(f"🗑️ Auto-flushed {len(deleted)} items: {', '.join(deleted)}")
+
+        # Check every hour
+        time.sleep(3600)
+
+
+@mcp.tool()
+def flush_workspace_now() -> str:
+    """
+    Manually flush/delete ALL files and folders in the workspace immediately.
+    Use with caution — this deletes everything.
+    """
+    if not WORKSPACE.exists():
+        return "⚠️ Workspace does not exist."
+
+    deleted = []
+    for item in WORKSPACE.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+        deleted.append(item.name)
+
+    if not deleted:
+        return "✅ Workspace was already empty."
+
+    return f"🗑️ Flushed {len(deleted)} items: {', '.join(deleted)}"
+
+
+@mcp.tool()
+def flush_files_older_than(hours: int = 24) -> str:
+    """
+    Delete all files and folders older than the given number of hours.
+    Defaults to 24 hours (1 day).
+    """
+    if not WORKSPACE.exists():
+        return "⚠️ Workspace does not exist."
+
+    now = time.time()
+    max_age = hours * 3600
+    deleted = []
+    skipped = []
+
+    for item in WORKSPACE.iterdir():
+        age = now - item.stat().st_mtime
+        if age > max_age:
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+            deleted.append(item.name)
+        else:
+            skipped.append(item.name)
+
+    result = f"🗑️ Deleted {len(deleted)} items older than {hours}h"
+    if deleted:
+        result += f": {', '.join(deleted)}"
+    if skipped:
+        result += f"\n✅ Kept {len(skipped)} recent items: {', '.join(skipped)}"
+    return result
+
+
+@mcp.tool()
+def workspace_status() -> str:
+    """
+    Show all files in workspace with their age, so you know what will be flushed.
+    """
+    if not WORKSPACE.exists():
+        return "⚠️ Workspace does not exist."
+
+    items = list(WORKSPACE.iterdir())
+    if not items:
+        return "✅ Workspace is empty."
+
+    now = time.time()
+    result = f"📁 Workspace: {WORKSPACE}\n"
+    result += f"{'Name':<30} {'Size':>10} {'Age':>15}\n"
+    result += "-" * 60 + "\n"
+
+    for item in sorted(items):
+        age_seconds = now - item.stat().st_mtime
+        age_hours = age_seconds / 3600
+        size = item.stat().st_size if item.is_file() else 0
+
+        if age_hours < 1:
+            age_str = f"{int(age_seconds / 60)}m ago"
+        elif age_hours < 24:
+            age_str = f"{age_hours:.1f}h ago"
+        else:
+            age_str = f"{age_hours / 24:.1f}d ago"
+
+        flag = "🔴" if age_seconds > MAX_AGE_SECONDS else "🟢"
+        result += f"{flag} {item.name:<28} {size:>10} bytes  {age_str:>10}\n"
+
+    result += "\n🔴 = will be auto-flushed | 🟢 = safe"
     return result
 
 @mcp.tool()
@@ -353,6 +475,12 @@ def file_info(filename: str) -> str:
         
     except Exception as e:
         return f"❌ Error getting file info: {e}"
+    
+# Start the background auto-flush thread on server startup
+flush_thread = threading.Thread(target=flush_old_files, daemon=True)
+flush_thread.start()
+print("🕐 Auto-flush background thread started (runs every hour, deletes files > 1 day old)")
+
 
 if __name__ == "__main__":
     print("🚀 File System MCP Server Starting...")

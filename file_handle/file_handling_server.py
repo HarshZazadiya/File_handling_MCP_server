@@ -11,8 +11,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 
 mcp = FastMCP("filesystem")
 
-WORKSPACE = Path("D:/internship_project/eve_book/src/ai/local_mcp/file_handle/workspace")
-WORKSPACE.mkdir(exist_ok=True)
+WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "/tmp/workspace"))
+WORKSPACE.mkdir(parents=True, exist_ok=True)
 
 def is_base64_encoded(content: str) -> bool:
     """Check if a string appears to be base64 encoded"""
